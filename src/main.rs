@@ -36,8 +36,20 @@ fn main() {
      (@arg api_addr: --api [ADDR] default_value("127.0.0.1:7000") "Sets the IP address and the port of the API server")
      (@arg known_peer: -c --connect ... [PEER] "Sets the peers to connect to at start")
      (@arg p2p_workers: --("p2p-workers") [INT] default_value("8") "Sets the number of worker threads for P2P server")
+     // if this is an attack, then attacker = 1
+     (@arg attacker: --("attacker") [INT] default_value("0") "Set if this is an attacker")
     )
     .get_matches();
+
+    // parse attacker 
+    let attacker = matches
+        .value_of("attacker")
+        .unwrap()
+        .parse::<usize>()
+        .unwrap_or_else(|e| {
+            error!("Error parsing attacker: {}", e);
+            process::exit(1);
+        });
 
     // init logger
     let verbosity = matches.occurrences_of("verbose") as usize;
@@ -113,13 +125,12 @@ fn main() {
         });
     }
 
-
     // blockchain
     let chain : blockchain::Blockchain = blockchain::Blockchain::new();
     let blockchain = Arc::new(Mutex::new(chain));
 
     // orphan block buffer
-    let map : HashMap<H256, Vec<block::Block>> = HashMap::new();
+    let map : HashMap<H256, Vec<block::ProposerBlock>> = HashMap::new();
     let orphan_handler = Arc::new(Mutex::new(map));
 
     // transaction mempool
@@ -138,6 +149,14 @@ fn main() {
     let my_addr_key_body : HashMap<H160, Ed25519KeyPair> = HashMap::new();
     let my_addr_key = Arc::new(Mutex::new(my_addr_key_body));
 
+    // transaction block mempool
+    let tx_block_pool_map : HashMap<H256, block::TXBlock> = HashMap::new();
+    let tx_block_pool = Arc::new(Mutex::new(tx_block_pool_map));
+
+    // record what tx blocks are referenced by this proposer block and its ancestors
+    let block_reference_body : HashMap<H256, Vec<H256>> = HashMap::new();
+    let tx_block_ref = Arc::new(Mutex::new(block_reference_body));
+
     let worker_ctx = worker::new(
         p2p_workers,
         msg_rx,
@@ -148,6 +167,8 @@ fn main() {
         &glob_state,
         &all_addr,
         &my_addr_key,
+        &tx_block_pool,
+        &tx_block_ref
     );
     worker_ctx.start();
 
@@ -157,10 +178,16 @@ fn main() {
         &blockchain,
         &tx_pool,
         &glob_state,
+        &tx_block_pool,
+        &tx_block_ref
     );
-    miner_ctx.start();
+    if attacker == 0 {
+        miner_ctx.start();
+    }
+    else {
+        miner_ctx.start_attacker();
+    }
     
-
     // start the generator
     let (generator_ctx, generator) = generator::new(
         &server,

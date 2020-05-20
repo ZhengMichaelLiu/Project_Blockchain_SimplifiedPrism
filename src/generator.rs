@@ -220,7 +220,7 @@ impl Context {
         // this is initializing addresses and broadcasting to peers
         // each node controls some addresses, put into my_addr_key
         // and all the addresses are stored into the all_addr
-        let addr_num = 40;
+        let addr_num = 30;
         for _i in 0..addr_num {
             let key = key_pair::random();
             let h : H256 = ring::digest::digest(&ring::digest::SHA256, key.public_key().as_ref()).into();
@@ -343,6 +343,3 @@ impl Context {
         }
     }
 }
-
-
-

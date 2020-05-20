@@ -1,4 +1,4 @@
-use crate::block::Block;
+use crate::block::{ProposerBlock, TXBlock};
 use crate::crypto::hash::{H256,H160};
 use crate::transaction::SignedTransaction;
 use std::collections::HashMap;
@@ -14,7 +14,11 @@ pub enum Message {
     GetTransactions(Vec<H256>),
     Transactions(Vec<SignedTransaction>),
 
-    NewBlockHashes(Vec<H256>),
-    GetBlocks(Vec<H256>),
-    Blocks(Vec<Block>),
+    NewTransactionBlockHashes(Vec<H256>),
+    GetTransactionBlocks(Vec<H256>),
+    TransactionBlocks(Vec<TXBlock>),
+
+    NewProposerBlockHashes(Vec<H256>),
+    GetProposerBlocks(Vec<H256>),
+    ProposerBlocks(Vec<ProposerBlock>),
 }

@@ -2,14 +2,16 @@ use crate::crypto::hash::{H256, Hashable};
 use crate::transaction::SignedTransaction;
 use serde::{Serialize, Deserialize};
 
-// Header for block
+// Header for super block
 #[derive(Serialize, Deserialize, Debug,Clone,Copy)]
 pub struct Header {
-    pub parent : H256,
+    pub proposer_parent : H256,
     pub nonce : u32,
     pub timestamp : u128,
-    pub difficulty : H256,
-    pub merkle : H256,
+    pub transaction_difficulty : H256,
+    pub proposer_difficulty : H256,
+    pub merkle_transaction : H256,
+    pub merkle_proposer : H256,
 }
 
 impl Hashable for Header {
@@ -19,19 +21,37 @@ impl Hashable for Header {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug,Clone)]
-pub struct Content {
-    pub transaction_content: Vec<SignedTransaction>,
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ProposerContent {
+    pub proposer_content : Vec<H256>,
+}
+
+// Definition of super block
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ProposerBlock {
+    pub header : Header,
+    pub content : ProposerContent,
+}
+
+impl Hashable for ProposerBlock {
+    fn hash(&self) -> H256 {
+        self.header.hash()
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TXContent {
+    pub transaction_content : Vec<SignedTransaction>,
 }
 
 // Definition of block
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Block {
+pub struct TXBlock {
     pub header : Header,
-    pub content : Content,
+    pub content : TXContent,
 }
 
-impl Hashable for Block {
+impl Hashable for TXBlock {
     fn hash(&self) -> H256 {
         self.header.hash()
     }
@@ -40,26 +60,24 @@ impl Hashable for Block {
 #[cfg(any(test, test_utilities))]
 pub mod test {
     use super::*;
-    use crate::crypto::merkle::MerkleTree;
-    use std::time::SystemTime;
+    use crate::crypto::hash::H256;
 
-    pub fn generate_random_block(parent: &H256) -> Block {
-        let fake_content : Vec::<SignedTransaction> = Vec::new();
-        let fake_root : H256 = MerkleTree::new(&fake_content).root();
-
-        let header = Header{
-            parent: *parent,
-            nonce: 1,
-            difficulty: H256([0;32]),
+    pub fn generate_random_block(parent: &H256) -> ProposerBlock {
+        let header = Header {
+            proposer_parent: *parent,
+            nonce: random::<u32>(),
             timestamp: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis(),
-            merkle: fake_root,
+            transaction_difficulty: H256([0;32]),
+            proposer_difficulty: H256([0;32]),
+            merkle_transaction: H256([0;32]),
+            merkle_proposer: H256([0;32]),
         };
 
-        let content = Content{
-            transaction_content: fake_content,
+        let content = ProposerContent {
+            proposer_content: Vec::<H256>::new(),
         };
 
-        return Block{
+        return ProposerBlock {
             header : header,
             content : content,
         }

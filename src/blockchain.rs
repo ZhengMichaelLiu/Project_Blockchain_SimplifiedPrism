@@ -1,13 +1,12 @@
-use crate::block::{Header, Content, Block};
-use crate::transaction::SignedTransaction;
+use crate::block::{Header, ProposerContent, ProposerBlock};
 use crate::crypto::merkle::MerkleTree;
-use crate::crypto::hash::{H256, Hashable};
+use crate::crypto::hash::{H256,Hashable};
 
 use std::collections::HashMap;
 
 pub struct Blockchain {
     // hash of blocks and blocks themselves
-    pub blocks : HashMap<H256, Block>, 
+    pub blocks : HashMap<H256, ProposerBlock>, 
     
     // hash of blocks and their heights
     pub heights : HashMap<H256, u32>, 
@@ -22,29 +21,35 @@ pub struct Blockchain {
 impl Blockchain {
     /// Create a new blockchain, only containing the genesis block
     pub fn new() -> Self {
-        let difficulty : [u8; 32] = [7, 255, 255, 255, 255, 255, 255, 255, 
+        let transaction_difficulty : [u8; 32] = [127, 255, 255, 255, 255, 255, 255, 255, 
             255, 255, 255, 255, 255, 255, 255, 255,
             255, 255, 255, 255, 255, 255, 255, 255,
             255, 255, 255, 255, 255, 255, 255, 255,];
 
-        let fake_content : Vec<SignedTransaction> = Vec::new();
+        let proposer_difficulty : [u8; 32] = [15, 255, 255, 255, 255, 255, 255, 255, 
+            255, 255, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255,];
 
         let header : Header = Header {
-            parent: H256([0;32]),
-            nonce: 1,
-            timestamp: 1,
-            difficulty: <H256>::from(&difficulty),
-            merkle: MerkleTree::new(&fake_content).root(),
+            proposer_parent: MerkleTree::new(&vec![H256([0;32])]).root(),       // fake
+            nonce: 1,                                                           // fake
+            timestamp: 1,                                                       // fake
+            transaction_difficulty: <H256>::from(&transaction_difficulty),      // fake
+            proposer_difficulty: <H256>::from(&proposer_difficulty),            // fake
+            merkle_transaction: MerkleTree::new(&vec![H256([0;32])]).root(),    // fake
+            merkle_proposer: MerkleTree::new(&vec![H256([0;32])]).root(),       // fake
         };
 
-        let content : Content = Content {
-            transaction_content: fake_content,
+        let content : ProposerContent = ProposerContent {
+            proposer_content: vec![H256([0;32])],                               // fake
         };      
 
-        let genesis_block : Block = Block {
+        let genesis_block : ProposerBlock = ProposerBlock {
             header: header,   
             content: content,
         };
+
 
         let mut blocks_hash_map = HashMap::new();
         blocks_hash_map.insert(genesis_block.clone().hash(), genesis_block.clone());
@@ -61,9 +66,9 @@ impl Blockchain {
     }
 
     /// Insert a block into blockchain
-    pub fn insert(&mut self, block: &Block) {
+    pub fn insert(&mut self, block: &ProposerBlock) {
         self.blocks.insert(block.clone().hash(), block.clone());
-		let curr_height = self.heights[&block.clone().header.parent] + 1;
+		let curr_height = self.heights[&block.clone().header.proposer_parent] + 1;
 		self.heights.insert(block.clone().hash(), curr_height);
 		if curr_height > self.longest {
 			self.longest = curr_height;
@@ -87,7 +92,7 @@ impl Blockchain {
     
         for _i in 0..=self.longest {
             result.push(curr_node);
-            curr_node = self.blocks[&curr_node].header.parent;
+            curr_node = self.blocks[&curr_node].header.proposer_parent;
         }
     
         result.reverse();

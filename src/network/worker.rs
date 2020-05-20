@@ -1,4 +1,4 @@
-use crate::block::Block;
+use crate::block::{ProposerBlock, TXBlock};
 use crate::blockchain::Blockchain;
 use crate::crypto::hash::{H256,H160,Hashable};
 use super::message::Message;
@@ -19,11 +19,13 @@ pub struct Context {
     num_worker: usize,
     server: ServerHandle,
     blockchain: Arc<Mutex<Blockchain>>,
-    orphan_handler: Arc<Mutex<HashMap<H256, Vec<Block>>>>,
+    orphan_handler: Arc<Mutex<HashMap<H256, Vec<ProposerBlock>>>>,
     tx_pool: Arc<Mutex<HashMap<H256, SignedTransaction>>>,
     glob_state: Arc<Mutex<HashMap<H256, HashMap<(H256, u32), (u32, H160)>>>>,
     all_addr: Arc<Mutex<Vec<H160>>>,
     my_addr_key: Arc<Mutex<HashMap<H160, Ed25519KeyPair>>>,
+    tx_block_pool: Arc<Mutex<HashMap<H256, TXBlock>>>,
+    tx_block_ref: Arc<Mutex<HashMap<H256, Vec<H256>>>>,
 }
 
 pub fn new(
@@ -31,11 +33,13 @@ pub fn new(
     msg_src: channel::Receiver<(Vec<u8>, peer::Handle)>,
     server: &ServerHandle,
     blockchain: &Arc<Mutex<Blockchain>>,
-    orphan_handler: &Arc<Mutex<HashMap<H256, Vec<Block>>>>,
+    orphan_handler: &Arc<Mutex<HashMap<H256, Vec<ProposerBlock>>>>,
     tx_pool: &Arc<Mutex<HashMap<H256, SignedTransaction>>>,
     glob_state: &Arc<Mutex<HashMap<H256, HashMap<(H256, u32), (u32, H160)>>>>,
     all_addr: &Arc<Mutex<Vec<H160>>>,
     my_addr_key: &Arc<Mutex<HashMap<H160, Ed25519KeyPair>>>,
+    tx_block_pool: &Arc<Mutex<HashMap<H256, TXBlock>>>,
+    tx_block_ref: &Arc<Mutex<HashMap<H256, Vec<H256>>>>,
 ) -> Context {
     Context {
         msg_chan: msg_src,
@@ -47,6 +51,8 @@ pub fn new(
         glob_state: Arc::clone(glob_state),
         all_addr: Arc::clone(all_addr),
         my_addr_key: Arc::clone(my_addr_key),
+        tx_block_pool: Arc::clone(tx_block_pool),
+        tx_block_ref: Arc::clone(tx_block_ref),
     }
 }
 
@@ -64,9 +70,7 @@ impl Context {
 
     // this function is used to handle the orphan blocks
     // when a new block arrives, we need to check if the new block is a missing parent to some orphans
-
-    
-    fn new_parent(&self, block_item : &Block, peer : &peer::Handle){
+    fn new_parent(&self, block_item : &ProposerBlock, peer : &peer::Handle){
         // check if it is a missing parent
         if self.orphan_handler.lock().unwrap().contains_key(&block_item.hash()){
             // if it is, then get its waiting children
@@ -76,133 +80,90 @@ impl Context {
             self.orphan_handler.lock().unwrap().remove(&block_item.hash());
 
             // process each orphan
-            for each_block in &vec {
+            for each_proposer_block in &vec {
+                // When receiving and processing a block,
                 // check if the transaction is signed correctly by the public key(s).
                 let mut valid = true;
-                for each_tx in each_block.content.transaction_content.iter() {
-                    if verify(&each_tx.transaction, &each_tx.sig.key, &each_tx.sig.signature) == false {
-                        debug!("Received Transaction signed wrong");
-                        valid = false;
-                        break;
-                    }        
-                }
-                if valid == false {
-                    continue;
-                }
-
-                // check if the inputs to the transactions are not spent
-                valid = true;
-                let mut curr_state = self.glob_state.lock().unwrap()[&each_block.header.parent].clone();
-                for each_tx in each_block.content.transaction_content.iter() {
-                    for i in 0..each_tx.transaction.input_previous.len() {
-                        if curr_state.contains_key(&(each_tx.transaction.input_previous[i], each_tx.transaction.input_index[i])) == false {
-                            valid=false;
-                            break;
-                        }
-                    }
-                    if valid == false {
-                        break;
-                    }
-                }
-                if valid == false {
-                    debug!("Received Block Transaction Spent");
-                    continue;
-                }
-
-                // check the public key(s) matches the owner(s)'s address of these inputs.
-                valid = true;
-                for each_tx in each_block.content.transaction_content.iter() {
-                    for i in 0..each_tx.transaction.input_previous.len() {
-                        let (_value, addr) = curr_state[&(each_tx.transaction.input_previous[i], each_tx.transaction.input_index[i])];
-                        let h : H256 = ring::digest::digest(&ring::digest::SHA256, &(each_tx.sig.key[..])).into();
-                        let pub_key = H160::from(h);
-                        if addr != pub_key {
+                for each_ref in each_proposer_block.content.proposer_content.clone() {
+                    let curr_tx_block = self.tx_block_pool.lock().unwrap()[&each_ref].clone();
+                    for each_tx in curr_tx_block.content.transaction_content.iter() {
+                        if verify(&each_tx.transaction, &each_tx.sig.key, &each_tx.sig.signature) == false {
+                            debug!("Transaction signed wrong");
                             valid = false;
                             break;
-                        }
+                        }        
                     }
                     if valid == false {
                         break;
                     }
                 }
                 if valid == false {
-                    debug!("Transaction key address not match");
                     continue;
                 }
-
+                // check the public key(s) matches the owner(s)'s address of these inputs.
+                // check if the inputs to the transactions are not spent
                 // check the values of inputs are not less than those of outputs.
-                valid = true;
-                for each_tx in each_block.content.transaction_content.iter() {
-                    let mut input_sum : u32 = 0;
-                    let mut output_sum : u32 = 0;
-                    for i in 0..each_tx.transaction.input_previous.len() {
-                        let (value, _addr) = curr_state[&(each_tx.transaction.input_previous[i], each_tx.transaction.input_index[i])];
-                        input_sum = value;
-                        output_sum += each_tx.transaction.output_value[i];
-                    }
-                    if output_sum > input_sum {
-                        valid = false;
-                        debug!("Transaction output larger");
-                        break;
-                    }
-                }
-                if valid == false{
-                    continue;
-                }
 
-                // remove the transaction contained in this block from the transaction pool
-                for transaction in each_block.content.transaction_content.clone() {
-                    if self.tx_pool.lock().unwrap().contains_key(&transaction.hash()) == false {
-                        continue;
+                // update tx_block_ref
+                let mut new_ref : Vec<H256> = self.tx_block_ref.lock().unwrap()[&each_proposer_block.header.proposer_parent].clone();
+                let my_ref : Vec<H256> = each_proposer_block.content.proposer_content.clone();
+                for each_ref in my_ref.iter() {
+                    if new_ref.contains(&each_ref) == false {
+                        new_ref.push(*each_ref);
                     }
-                    self.tx_pool.lock().unwrap().remove(&transaction.hash());
                 }
+                self.tx_block_ref.lock().unwrap().insert(each_proposer_block.hash(), new_ref.clone());
 
                 // update state ledger
-                for each_tx in each_block.content.transaction_content.iter() {
-                    let mut lookup_key = (H256([0;32]),0); // initialized to be a fake look up key
-                    let mut exist = false;
-                    for i in 0..each_tx.transaction.input_previous.len() {
-                        lookup_key = (each_tx.transaction.input_previous[i], each_tx.transaction.input_index[i]);
-                        // if this transaction is valid, then update the ledger // else not update the ledger
-                        if curr_state.contains_key(&lookup_key) {
-                            exist = true;
-                            curr_state.insert((each_tx.hash(), i as u32), (each_tx.transaction.output_value[i], each_tx.transaction.output_address[i]));
+                let mut curr_state = self.glob_state.lock().unwrap()[&each_proposer_block.header.proposer_parent].clone();
+                for each_ref in my_ref.iter() {
+                    let curr_tx_block = self.tx_block_pool.lock().unwrap()[&each_ref].clone();
+                    for each_tx in curr_tx_block.content.transaction_content.iter() {
+                        let mut lookup_key = (H256([0;32]),0); // initialized to be a fake look up key
+                        let mut exist = false;
+                        for i in 0..each_tx.transaction.input_previous.len() {
+                            lookup_key = (each_tx.transaction.input_previous[i], each_tx.transaction.input_index[i]);
+                            // if this transaction is valid, then update the ledger // else not update the ledger
+                            if curr_state.contains_key(&lookup_key) {
+                                exist = true;
+                                curr_state.insert((each_tx.hash(), i as u32), (each_tx.transaction.output_value[i], each_tx.transaction.output_address[i]));
+                            }
+                        }
+                        if exist == true {
+                            curr_state.remove(&lookup_key);
                         }
                     }
-                    if exist == true {
-                        curr_state.remove(&lookup_key);
-                    }
                 }
-                
+
                 // update transaction pool, remove the transactions that are conflict with the new state.
                 let mut curr_tx_pool = self.tx_pool.lock().unwrap();
                 let mut to_remove_tx : Vec<H256> = Vec::new();
                 for each_tx in curr_tx_pool.keys() {
                     for idx in 0..curr_tx_pool[&each_tx].transaction.input_previous.len() {
-                        let lookup_key = (curr_tx_pool[&each_tx].transaction.input_previous[idx], curr_tx_pool[&each_tx].transaction.input_index[idx]);
+                        let lookup_key = (curr_tx_pool[&each_tx].transaction.input_previous[idx],
+                                        curr_tx_pool[&each_tx].transaction.input_index[idx]);
                         if curr_state.contains_key(&lookup_key) == false {
                             to_remove_tx.push(*each_tx);
                         }
                     }
                 }
                 for key in to_remove_tx.iter() {
-                    //debug!("Removing old transactions");
+                    // debug!("Removing old transactions");
                     curr_tx_pool.remove(key);
                 }
                 std::mem::drop(curr_tx_pool);
 
                 // insert new state
-                self.glob_state.lock().unwrap().insert(each_block.hash(), curr_state.clone());
+                self.glob_state.lock().unwrap().insert(each_proposer_block.hash(), curr_state.clone());
 
                 // insert new block
-                self.blockchain.lock().unwrap().insert(&each_block.clone());
+                self.blockchain.lock().unwrap().insert(&each_proposer_block.clone());
 
                 // Relay blocks
-                self.server.broadcast(Message::NewBlockHashes(vec![each_block.hash()]));
+                self.server.broadcast(Message::NewProposerBlockHashes(vec![each_proposer_block.hash()]));
 
                 // check new parent
-                self.new_parent(&each_block, &peer);
+                self.new_parent(&each_proposer_block, &peer);
             }
         }
     }
@@ -284,7 +245,7 @@ impl Context {
                         valid = true;
                         for i in 0..each_tx.transaction.input_previous.len() {
                             let (_value, addr) = curr_state[&(each_tx.transaction.input_previous[i], each_tx.transaction.input_index[i])];
-                            let h : H256 = ring::digest::digest(&ring::digest::SHA256, &(each_tx.sig.key[..])).into();
+                            let h:H256 = ring::digest::digest(&ring::digest::SHA256, &(each_tx.sig.key[..])).into();
                             let pub_key = H160::from(h);
                             if addr != pub_key {
                                 valid = false;
@@ -315,156 +276,173 @@ impl Context {
                     }
                 }
 
-                Message::NewBlockHashes(block_hash_vec) => {
-                    for each_block_hash in block_hash_vec {
-                        if self.blockchain.lock().unwrap().blocks.contains_key(&each_block_hash) == false {
-                            peer.write(Message::GetBlocks(vec![each_block_hash]));
+                Message::NewTransactionBlockHashes(tx_block_hash_vec) => {
+                    for each_tx_block_hash in tx_block_hash_vec {
+                        if self.tx_block_pool.lock().unwrap().contains_key(&each_tx_block_hash) == false {
+                            peer.write(Message::GetTransactionBlocks(vec![each_tx_block_hash]));
                         }
                     }
                 }
 
-                Message::GetBlocks(block_hash_vec) => {
-                    for each_block_hash in block_hash_vec {
-                        if self.blockchain.lock().unwrap().blocks.contains_key(&each_block_hash) == true {
-                            peer.write(Message::Blocks(vec![self.blockchain.lock().unwrap().blocks[&each_block_hash].clone()]));
+                Message::GetTransactionBlocks(tx_block_hash_vec) => {
+                    for each_tx_block_hash in tx_block_hash_vec {
+                        if self.tx_block_pool.lock().unwrap().contains_key(&each_tx_block_hash) == true {
+                            peer.write(Message::TransactionBlocks(vec![self.tx_block_pool.lock().unwrap()[&each_tx_block_hash].clone()]));
                         }
                     }
                 }
 
-                Message::Blocks(block_vec) => {
-                    for each_block in block_vec {
-                        // if this block is in the blockchain
-                        if self.blockchain.lock().unwrap().blocks.contains_key(&each_block.hash()) == true{
+                Message::TransactionBlocks(tx_block_vec) => {
+                    for each_tx_block in tx_block_vec {
+                        // if this transaction block is not in the pool
+                        if self.tx_block_pool.lock().unwrap().contains_key(&each_tx_block.hash()) == true {
+                            debug!("Transaction Block in the pool");
                             continue;
                         }
 
-                        // PoW check: check if block.hash() <= difficulty. 
-                        if each_block.hash() > each_block.header.difficulty {
-                            debug!("Block wrong sortition");
+                        // PoW check: check if tx_block.hash > proposer_difficulty && tx_block.hash < transction_difficulty 
+                        if each_tx_block.hash() > each_tx_block.header.transaction_difficulty {
+                            debug!("Transaction block wrong sortition");
+                            continue;
+                        }
+                        if each_tx_block.hash() <= each_tx_block.header.proposer_difficulty {
+                            debug!("Transaction block wrong sortition");
                             continue;
                         }
 
-                        // If the block is empty, then ignore
-                        if each_block.content.transaction_content.len() == 0 {
-                            debug!("Empty Block");
+                        // check if this transaction block is empty
+                        // commented out for attack
+                        /*
+                        if each_tx_block.content.transaction_content.len() == 0 {
+                            debug!("Empty Transaction Block");
                             continue;
                         }
-
-                        // If a block's parent is missing, put this block into a buffer and send Getblocks message.
-                        // When the parent is received, that block can be popped out from buffer and check again.
-                        if self.blockchain.lock().unwrap().blocks.contains_key(&each_block.header.parent) == false {
-                            debug!("orphan");
-                            if self.orphan_handler.lock().unwrap().contains_key(&each_block.header.parent) {
-                                if let Some(x) = self.orphan_handler.lock().unwrap().get_mut(&each_block.header.parent) {
-                                    x.push(each_block.clone());
-                                }
-                            }
-                            else {
-                                self.orphan_handler.lock().unwrap().insert(each_block.header.parent, vec![each_block.clone()]);
-                            }
-                            peer.write(Message::GetBlocks(vec![each_block.header.parent.clone()]));
-                            continue;
-                        }
-
-                        // When receiving and processing a block,
-                        // check if the transaction is signed correctly by the public key(s).
-                        let mut valid = true;
-                        for each_tx in each_block.content.transaction_content.iter() {
-                            if verify(&each_tx.transaction, &each_tx.sig.key, &each_tx.sig.signature) == false {
-                                debug!("Transaction signed wrong");
-                                valid = false;
-                                break;
-                            }        
-                        }
-                        if valid == false {
-                            continue;
-                        }
-
-                        // check if the inputs to the transactions are not spent
-                        valid = true;
-                        let mut curr_state = self.glob_state.lock().unwrap()[&each_block.header.parent].clone();
-                        for each_tx in each_block.content.transaction_content.iter() {
-                            for i in 0..each_tx.transaction.input_previous.len() {
-                                if curr_state.contains_key(&(each_tx.transaction.input_previous[i], each_tx.transaction.input_index[i])) == false {
-                                    valid=false;
-                                    break;
-                                }
-                            }
-                            if valid == false {
-                                break;
-                            }
-                        }
-                        if valid == false {
-                            debug!("Received Block Transaction Spent");
-                            continue;
-                        }
-
-                        // check the public key(s) matches the owner(s)'s address of these inputs.
-                        valid = true;
-                        for each_tx in each_block.content.transaction_content.iter() {
-                            for i in 0..each_tx.transaction.input_previous.len() {
-                                let (_value, addr) = curr_state[&(each_tx.transaction.input_previous[i], each_tx.transaction.input_index[i])];
-                                let h:H256 = ring::digest::digest(&ring::digest::SHA256, &(each_tx.sig.key[..])).into();
-                                let pub_key = H160::from(h);
-                                if addr != pub_key {
-                                    valid = false;
-                                    break;
-                                }
-                            }
-                            if valid == false {
-                                break;
-                            }
-                        }
-                        if valid == false {
-                            debug!("Transaction key address not match");
-                            continue;
-                        }
-
-                        // check the values of inputs are not less than those of outputs.
-                        valid = true;
-                        for each_tx in each_block.content.transaction_content.iter() {
-                            let mut input_sum : u32 = 0;
-                            let mut output_sum : u32 = 0;
-                            for i in 0..each_tx.transaction.input_previous.len() {
-                                let (value, _addr) = curr_state[&(each_tx.transaction.input_previous[i], each_tx.transaction.input_index[i])];
-                                input_sum = value;
-                                output_sum += each_tx.transaction.output_value[i];
-                            }
-                            if output_sum > input_sum {
-                                valid = false;
-                                debug!("Transaction output larger");
-                                break;
-                            }
-                        }
-                        if valid == false{
-                            continue;
-                        }
+                        */
 
                         // remove the transaction contained in this block from the transaction pool
-                        for transaction in each_block.content.transaction_content.clone() {
+                        for transaction in each_tx_block.content.transaction_content.clone() {
                             if self.tx_pool.lock().unwrap().contains_key(&transaction.hash()) == false {
                                 continue;
                             }
                             self.tx_pool.lock().unwrap().remove(&transaction.hash());   
                         }
 
-                        // update state ledger
-                        for each_tx in each_block.content.transaction_content.iter() {
-                            let mut lookup_key = (H256([0;32]),0); // initialized to be a fake look up key
-                            let mut exist = false;
-                            for i in 0..each_tx.transaction.input_previous.len() {
-                                lookup_key = (each_tx.transaction.input_previous[i], each_tx.transaction.input_index[i]);
-                                // if this transaction is valid, then update the ledger // else not update the ledger
-                                if curr_state.contains_key(&lookup_key) {
-                                    exist = true;
-                                    curr_state.insert((each_tx.hash(), i as u32), (each_tx.transaction.output_value[i], each_tx.transaction.output_address[i]));
+                        // insert this block into the transaction block pool
+                        self.tx_block_pool.lock().unwrap().insert(each_tx_block.hash(), each_tx_block.clone());
+
+                        // Relay blocks
+                        self.server.broadcast(Message::NewTransactionBlockHashes(vec![each_tx_block.hash()]));
+                    }
+                }
+
+                Message::NewProposerBlockHashes(proposer_block_hash_vec) => {
+                    for each_proposer_block_hash in proposer_block_hash_vec {
+                        if self.blockchain.lock().unwrap().blocks.contains_key(&each_proposer_block_hash) == false {
+                            peer.write(Message::GetProposerBlocks(vec![each_proposer_block_hash]));
+                        }
+                    }
+                }
+
+                Message::GetProposerBlocks(proposer_block_hash_vec) => {
+                    for each_proposer_block_hash in proposer_block_hash_vec {
+                        if self.blockchain.lock().unwrap().blocks.contains_key(&each_proposer_block_hash) == true {
+                            peer.write(Message::ProposerBlocks(vec![self.blockchain.lock().unwrap().blocks[&each_proposer_block_hash].clone()]));
+                        }
+                    }
+                }
+
+                Message::ProposerBlocks(proposer_block_vec) => {
+                    for each_proposer_block in proposer_block_vec {
+                        // if this proposer block is not in the blockchain
+                        if self.blockchain.lock().unwrap().blocks.contains_key(&each_proposer_block.hash()) == true{
+                            continue;
+                        }
+
+                        // PoW check: check if block.hash() <= difficulty. 
+                        if each_proposer_block.hash() > each_proposer_block.header.proposer_difficulty {
+                            debug!("Proposer wrong sortition");
+                            continue;
+                        }
+
+                        // If the proposer block is empty, then ignore
+                        // commented out for attack
+                        /*
+                        if each_proposer_block.content.proposer_content.len() == 0 {
+                            debug!("Empty Proposer Block");
+                            continue;
+                        }
+                        */
+
+                        // If a block's parent is missing, put this block into a buffer and send Getblocks message.
+                        // When the parent is received, that block can be popped out from buffer and check again.
+                        if self.blockchain.lock().unwrap().blocks.contains_key(&each_proposer_block.header.proposer_parent) == false {
+                            debug!("orphan");
+                            if self.orphan_handler.lock().unwrap().contains_key(&each_proposer_block.header.proposer_parent) {
+                                if let Some(x) = self.orphan_handler.lock().unwrap().get_mut(&each_proposer_block.header.proposer_parent) {
+                                    x.push(each_proposer_block.clone());
                                 }
                             }
-                            if exist == true {
-                                curr_state.remove(&lookup_key);
+                            else {
+                                self.orphan_handler.lock().unwrap().insert(each_proposer_block.header.proposer_parent, vec![each_proposer_block.clone()]);
+                            }
+                            peer.write(Message::GetProposerBlocks(vec![each_proposer_block.header.proposer_parent.clone()]));
+                            continue;
+                        }
+
+                        // When receiving and processing a block,
+                        // check if the transaction is signed correctly by the public key(s).
+                        let mut valid = true;
+                        for each_ref in each_proposer_block.content.proposer_content.clone() {
+                            let curr_tx_block = self.tx_block_pool.lock().unwrap()[&each_ref].clone();
+                            for each_tx in curr_tx_block.content.transaction_content.iter() {
+                                if verify(&each_tx.transaction, &each_tx.sig.key, &each_tx.sig.signature) == false {
+                                    debug!("Transaction signed wrong");
+                                    valid = false;
+                                    break;
+                                }        
+                            }
+                            if valid == false {
+                                break;
                             }
                         }
-                        
+                        if valid == false {
+                            continue;
+                        }
+                        // check the public key(s) matches the owner(s)'s address of these inputs.
+                        // check if the inputs to the transactions are not spent
+                        // check the values of inputs are not less than those of outputs.
+
+                        // update tx_block_ref
+                        let mut new_ref : Vec<H256> = self.tx_block_ref.lock().unwrap()[&each_proposer_block.header.proposer_parent].clone();
+                        let my_ref : Vec<H256> = each_proposer_block.content.proposer_content.clone();
+                        for each_ref in my_ref.iter() {
+                            if new_ref.contains(&each_ref) == false {
+                                new_ref.push(*each_ref);
+                            }
+                        }
+                        self.tx_block_ref.lock().unwrap().insert(each_proposer_block.hash(), new_ref.clone());
+
+                        // update state ledger
+                        let mut curr_state = self.glob_state.lock().unwrap()[&each_proposer_block.header.proposer_parent].clone();
+                        for each_ref in my_ref.iter() {
+                            let curr_tx_block = self.tx_block_pool.lock().unwrap()[&each_ref].clone();
+                            for each_tx in curr_tx_block.content.transaction_content.iter() {
+                                let mut lookup_key = (H256([0;32]),0); // initialized to be a fake look up key
+                                let mut exist = false;
+                                for i in 0..each_tx.transaction.input_previous.len() {
+                                    lookup_key = (each_tx.transaction.input_previous[i], each_tx.transaction.input_index[i]);
+                                    // if this transaction is valid, then update the ledger // else not update the ledger
+                                    if curr_state.contains_key(&lookup_key) {
+                                        exist = true;
+                                        curr_state.insert((each_tx.hash(), i as u32), (each_tx.transaction.output_value[i], each_tx.transaction.output_address[i]));
+                                    }
+                                }
+                                if exist == true {
+                                    curr_state.remove(&lookup_key);
+                                }
+                            }
+                        }
+
                         // update transaction pool, remove the transactions that are conflict with the new state.
                         let mut curr_tx_pool = self.tx_pool.lock().unwrap();
                         let mut to_remove_tx : Vec<H256> = Vec::new();
@@ -478,22 +456,22 @@ impl Context {
                             }
                         }
                         for key in to_remove_tx.iter() {
-                            //debug!("Removing old transactions");
+                            // debug!("Removing old transactions");
                             curr_tx_pool.remove(key);
                         }
                         std::mem::drop(curr_tx_pool);
 
                         // insert new state
-                        self.glob_state.lock().unwrap().insert(each_block.hash(), curr_state.clone());
+                        self.glob_state.lock().unwrap().insert(each_proposer_block.hash(), curr_state.clone());
 
                         // insert new block
-                        self.blockchain.lock().unwrap().insert(&each_block.clone());
+                        self.blockchain.lock().unwrap().insert(&each_proposer_block.clone());
 
                         // Relay blocks
-                        self.server.broadcast(Message::NewBlockHashes(vec![each_block.hash()]));
+                        self.server.broadcast(Message::NewProposerBlockHashes(vec![each_proposer_block.hash()]));
 
                         // check new parent
-                        self.new_parent(&each_block, &peer);
+                        self.new_parent(&each_proposer_block, &peer);
                     }
                 }
             }

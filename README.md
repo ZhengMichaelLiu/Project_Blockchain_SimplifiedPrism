@@ -4,7 +4,7 @@ This is the final project of ECE598: Principles of Principles of Blockchains, UI
 
 We implemented a simplified Prism 1.0 Protocol to improve throughput of the Bitcoin Client. 
 
-[Click here][1] to read the paper: **_Prism: Scaling Bitcoin by 10,000×, Yang et al. (2020)_**
+[Click here](https://arxiv.org/pdf/1909.11261.pdf) to read the paper: **_Prism: Scaling Bitcoin by 10,000×, Yang et al. (2020)_**
 
 Compared with the original Prism 1.0 Protocol described in above paper, our simplified version only has the transaction block part and proposer block part, without confirmation block part. 
 
@@ -24,13 +24,13 @@ It will download a script, and start the installation. If everything goes well, 
 Rust is installed now. Great!
 ```
 
-After this, you can use the rustup command to also install beta or nightly channels for Rust and Cargo.
+After this, you can use the `rustup` command to also install `beta` or `nightly` channels for Rust and Cargo.
 
 ## Usage
 
 After downloading the source code, follow the steps listed below to run the project:
 
-1. Open up 3 termimals and start three processes of the program by running these three commands respectively:
+1. Open up 3 termimals and start three processes of the program by running these three commands, respectively:
 
 ```bash
 cargo run -- -vvv --p2p 127.0.0.1:6000 --api 127.0.0.1:7000
@@ -38,9 +38,9 @@ cargo run -- -vvv --p2p 127.0.0.1:6001 --api 127.0.0.1:7001 -c 127.0.0.1:6000
 cargo run -- -vvv --p2p 127.0.0.1:6002 --api 127.0.0.1:7002 -c 127.0.0.1:6001
 ```
 
---p2p parameter means that the first process will listen on 127.0.0.1:6000 and the second process will listen on 127.0.0.1:6001.
+`--p2p` parameter means that the first process will listen on `127.0.0.1:6000` and the second process will listen on `127.0.0.1:6001`.
 
--c parameter means that the second process will try to connect to 127.0.0.1:6000, which is the address of the first process.
+`-c` parameter means that the second process will try to connect to `127.0.0.1:6000`, which is the address of the first process.
 
 On the first process, you can see this log, indicating that the first process accepts connection from the second process.
 
@@ -81,5 +81,3 @@ The total amount of the money should be the same as the beginning, but due to th
 ## Coworker
 
 Tianyi Tang.
-
-[1]: https://arxiv.org/pdf/1909.11261.pdf
